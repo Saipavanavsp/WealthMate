@@ -1,0 +1,23 @@
+# One-click deploy of the API on Render (https://render.com/deploy).
+# The free plan has an ephemeral disk, so the SQLite file resets on each deploy;
+# AUTO_SEED recreates the demo account on start-up.
+services:
+  - type: web
+    name: wealthmate-api
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: '24'
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_PATH
+        value: ./data/wealthmate.db
+      - key: AUTO_SEED
+        value: 'true'
+      - key: CORS_ORIGINS
+        value: '*'
