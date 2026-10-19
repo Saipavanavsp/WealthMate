@@ -71,10 +71,13 @@ class DashboardCubit extends Cubit<DashboardState> {
     if (txs == null || goals == null || isClosed) return;
 
     final now = _clock();
+    final monthStart = DateTime(now.year, now.month).millisecondsSinceEpoch;
+    final nextMonth = DateTime(now.year, now.month + 1).millisecondsSinceEpoch;
     var income = 0;
     var expense = 0;
     for (final t in txs) {
-      if (t.occurredAt.year != now.year || t.occurredAt.month != now.month) continue;
+      final at = t.occurredAt.millisecondsSinceEpoch;
+      if (at < monthStart || at >= nextMonth) continue;
       if (t.isExpense) {
         expense += t.amount.minor;
       } else {

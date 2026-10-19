@@ -54,9 +54,11 @@ class AnalyticsRequest {
 /// Chart aggregations. Pure functions with no Flutter dependency, so they
 /// can run in a background isolate via `compute`.
 ///
-/// Every aggregation is a single pass over the transactions with hash-map
-/// buckets keyed by period, so it is O(n) time and O(b) extra space for b
-/// buckets, instead of filtering the whole list once per bar (O(n * b)).
+/// Every aggregation is a single pass over the transactions. Period charts
+/// place each item by binary search over b period boundaries, so they cost
+/// O(n log b) time and O(b) space, instead of filtering the whole list once
+/// per bar (O(n * b)). Category totals use a hash map: O(n) plus an
+/// O(c log c) sort over the c categories.
 abstract final class SpendingAnalytics {
   static SpendingSummary summarise(AnalyticsRequest request) {
     final now = request.now;
@@ -69,26 +71,61 @@ abstract final class SpendingAnalytics {
   }
 
   static List<PeriodTotal> monthlyTotals(List<TransactionEntry> transactions, DateTime now, {int months = 6}) {
-    final starts = [for (var i = months - 1; i >= 0; i--) DateTime(now.year, now.month - i)];
-    int key(DateTime d) => d.year * 12 + d.month;
-    final buckets = {for (final s in starts) key(s): _Bucket()};
-
-    for (final t in transactions) {
-      buckets[key(t.occurredAt)]?.add(t);
-    }
-    return [for (final s in starts) buckets[key(s)]!.toTotal(s)];
+    // months + 1 boundaries: the start of each month plus the end of the last one.
+    final bounds = [for (var i = months - 1; i >= -1; i--) DateTime(now.year, now.month - i)];
+    return _bucketed(transactions, bounds);
   }
 
   /// Weeks start on Monday.
   static List<PeriodTotal> weeklyTotals(List<TransactionEntry> transactions, DateTime now, {int weeks = 8}) {
     final thisWeek = startOfWeek(now);
-    final starts = [for (var i = weeks - 1; i >= 0; i--) DateTime(thisWeek.year, thisWeek.month, thisWeek.day - 7 * i)];
-    final buckets = {for (final s in starts) s: _Bucket()};
+    final bounds = [
+      for (var i = weeks - 1; i >= -1; i--) DateTime(thisWeek.year, thisWeek.month, thisWeek.day - 7 * i),
+    ];
+    return _bucketed(transactions, bounds);
+  }
+
+  /// Sums transactions into the periods between consecutive [bounds].
+  ///
+  /// Each transaction is placed by binary search on the boundaries' epoch
+  /// milliseconds. An earlier version built a local DateTime per transaction
+  /// (to read year/month/weekday) and was over 400x slower at 50k rows, because
+  /// every local DateTime construction does a timezone lookup. See
+  /// docs/performance.md.
+  static List<PeriodTotal> _bucketed(List<TransactionEntry> transactions, List<DateTime> bounds) {
+    final edges = [for (final b in bounds) b.millisecondsSinceEpoch];
+    final income = List.filled(bounds.length - 1, 0);
+    final expense = List.filled(bounds.length - 1, 0);
 
     for (final t in transactions) {
-      buckets[startOfWeek(t.occurredAt)]?.add(t);
+      final i = _bucketIndex(edges, t.occurredAt.millisecondsSinceEpoch);
+      if (i < 0) continue;
+      if (t.isExpense) {
+        expense[i] += t.amount.minor;
+      } else {
+        income[i] += t.amount.minor;
+      }
     }
-    return [for (final s in starts) buckets[s]!.toTotal(s)];
+    return [
+      for (var i = 0; i < bounds.length - 1; i++)
+        PeriodTotal(start: bounds[i], incomeMinor: income[i], expenseMinor: expense[i]),
+    ];
+  }
+
+  /// Index i such that edges[i] <= value < edges[i + 1], or -1 when outside.
+  static int _bucketIndex(List<int> edges, int value) {
+    if (value < edges.first || value >= edges.last) return -1;
+    var low = 0;
+    var high = edges.length - 2;
+    while (low < high) {
+      final mid = (low + high + 1) >> 1;
+      if (edges[mid] <= value) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return low;
   }
 
   /// Expense totals per category between [from] and [to], largest first.
@@ -99,9 +136,12 @@ abstract final class SpendingAnalytics {
     required DateTime to,
   }) {
     final totals = <String, int>{};
+    final fromMs = from.millisecondsSinceEpoch;
+    final toMs = to.millisecondsSinceEpoch;
     var sum = 0;
     for (final t in transactions) {
-      if (!t.isExpense || t.occurredAt.isBefore(from) || t.occurredAt.isAfter(to)) continue;
+      final at = t.occurredAt.millisecondsSinceEpoch;
+      if (!t.isExpense || at < fromMs || at > toMs) continue;
       totals.update(t.category, (v) => v + t.amount.minor, ifAbsent: () => t.amount.minor);
       sum += t.amount.minor;
     }
@@ -113,19 +153,4 @@ abstract final class SpendingAnalytics {
   }
 
   static DateTime startOfWeek(DateTime date) => DateTime(date.year, date.month, date.day - (date.weekday - 1));
-}
-
-class _Bucket {
-  int income = 0;
-  int expense = 0;
-
-  void add(TransactionEntry t) {
-    if (t.isExpense) {
-      expense += t.amount.minor;
-    } else {
-      income += t.amount.minor;
-    }
-  }
-
-  PeriodTotal toTotal(DateTime start) => PeriodTotal(start: start, incomeMinor: income, expenseMinor: expense);
 }
