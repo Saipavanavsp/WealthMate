@@ -1,0 +1,307 @@
+openapi: 3.0.3
+info:
+  title: WealthMate API
+  version: 1.0.0
+  description: |
+    REST and sync API for the WealthMate app.
+
+    * Amounts are integers in minor units (paise for INR), never floats.
+    * Timestamps are Unix epoch milliseconds.
+    * Ids are client-generated UUIDs so records can be created offline.
+    * Every write uses last-write-wins on `updatedAt`. A write that is not strictly newer than the
+      stored copy is a conflict, and the server's copy is returned.
+
+    Demo account: `demo@wealthmate.app` / `Demo@1234`
+  contact:
+    name: Sai Pavan
+servers:
+  - url: /api/v1
+security:
+  - bearer: []
+tags:
+  - name: Auth
+  - name: Sync
+  - name: Transactions
+  - name: Goals
+  - name: Groups
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+      responses:
+        '201': { description: Account created, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: demo@wealthmate.app }
+                password: { type: string, example: Demo@1234 }
+      responses:
+        '200': { description: Signed in, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      description: Exchanges a refresh token for a new token pair. The old refresh token stops working.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } }
+      responses:
+        '200': { description: New session, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } }
+      responses:
+        '204': { description: Refresh token revoked }
+  /auth/me:
+    get:
+      tags: [Auth]
+      responses:
+        '200': { description: Current user }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /sync/push:
+    post:
+      tags: [Sync]
+      description: |
+        Applies outbox entries in order. Each entry comes back as `applied`, `conflict` (the
+        server copy is newer, so the client should keep `record`) or `rejected` (validation failed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                changes:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [changeId, entity, record]
+                    properties:
+                      changeId: { type: integer }
+                      entity: { $ref: '#/components/schemas/EntityName' }
+                      record: { type: object }
+      responses:
+        '200':
+          description: Per-change results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        changeId: { type: integer }
+                        status: { type: string, enum: [applied, conflict, rejected] }
+                        record: { type: object }
+                        reason: { type: string }
+  /sync/pull:
+    get:
+      tags: [Sync]
+      parameters:
+        - in: query
+          name: since
+          schema: { type: integer, default: 0 }
+          description: Cursor returned by the previous pull. Use 0 for a full download.
+      responses:
+        '200':
+          description: Changed records grouped by entity, including tombstones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor: { type: integer }
+                  changes: { type: object, additionalProperties: { type: array, items: { type: object } } }
+
+  /transactions:
+    get:
+      tags: [Transactions]
+      responses: { '200': { description: List, newest first } }
+    post:
+      tags: [Transactions]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } } }
+      responses: { '201': { description: Created }, '400': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' } }
+  /transactions/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get: { tags: [Transactions], responses: { '200': { description: Found }, '404': { $ref: '#/components/responses/Error' } } }
+    put:
+      tags: [Transactions]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } } }
+      responses: { '200': { description: Updated }, '409': { $ref: '#/components/responses/Error' } }
+    delete: { tags: [Transactions], responses: { '204': { description: Deleted (tombstoned) } } }
+
+  /goals:
+    get: { tags: [Goals], responses: { '200': { description: List } } }
+    post:
+      tags: [Goals]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Goal' } } } }
+      responses: { '201': { description: Created } }
+  /goals/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get: { tags: [Goals], responses: { '200': { description: Found } } }
+    put:
+      tags: [Goals]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Goal' } } } }
+      responses: { '200': { description: Updated } }
+    delete: { tags: [Goals], responses: { '204': { description: Deleted } } }
+
+  /groups:
+    get: { tags: [Groups], responses: { '200': { description: List } } }
+    post:
+      tags: [Groups]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string }, currency: { type: string } } } } }
+      responses: { '201': { description: Created } }
+  /groups/{id}/balances:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Groups]
+      description: Net balance per member and the simplified list of transfers that settles the group.
+      responses: { '200': { description: Balances and suggested transfers } }
+  /group-members:
+    get:
+      tags: [Groups]
+      parameters: [{ in: query, name: groupId, schema: { type: string } }]
+      responses: { '200': { description: List } }
+    post:
+      tags: [Groups]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [groupId, name], properties: { groupId: { type: string }, name: { type: string } } } } }
+      responses: { '201': { description: Created } }
+  /group-expenses:
+    get:
+      tags: [Groups]
+      parameters: [{ in: query, name: groupId, schema: { type: string } }]
+      responses: { '200': { description: List } }
+    post:
+      tags: [Groups]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/GroupExpense' } } } }
+      responses: { '201': { description: Created }, '400': { description: Shares do not add up to the amount } }
+  /settlements:
+    get:
+      tags: [Groups]
+      parameters: [{ in: query, name: groupId, schema: { type: string } }]
+      responses: { '200': { description: List } }
+    post:
+      tags: [Groups]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [groupId, fromMember, toMember, amountMinor, occurredAt]
+              properties:
+                groupId: { type: string }
+                fromMember: { type: string }
+                toMember: { type: string }
+                amountMinor: { type: integer }
+                occurredAt: { type: integer }
+      responses: { '201': { description: Recorded } }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { in: path, name: id, required: true, schema: { type: string } }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  details: {}
+  schemas:
+    EntityName:
+      type: string
+      enum: [transactions, goals, groups, groupMembers, groupExpenses, settlements]
+    Session:
+      type: object
+      properties:
+        user: { type: object, properties: { id: { type: string }, email: { type: string }, name: { type: string } } }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access token lifetime in seconds }
+    Transaction:
+      type: object
+      required: [type, amountMinor, category, occurredAt]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [expense, income] }
+        amountMinor: { type: integer, example: 45000 }
+        currency: { type: string, example: INR }
+        category: { type: string, example: Food }
+        merchant: { type: string, example: Swiggy }
+        note: { type: string }
+        occurredAt: { type: integer }
+        recurrence: { type: string, enum: [none, weekly, monthly] }
+        updatedAt: { type: integer }
+    Goal:
+      type: object
+      required: [name, targetMinor, deadline]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        targetMinor: { type: integer }
+        savedMinor: { type: integer }
+        currency: { type: string }
+        deadline: { type: integer }
+        updatedAt: { type: integer }
+    GroupExpense:
+      type: object
+      required: [groupId, description, amountMinor, paidBy, splitType, shares, occurredAt]
+      properties:
+        groupId: { type: string }
+        description: { type: string }
+        amountMinor: { type: integer }
+        paidBy: { type: string, description: Member id }
+        splitType: { type: string, enum: [equal, custom] }
+        shares: { type: object, additionalProperties: { type: integer }, description: memberId -> owed amount }
+        occurredAt: { type: integer }
