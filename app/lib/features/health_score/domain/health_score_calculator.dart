@@ -68,13 +68,19 @@ class HealthScoreCalculator {
     required List<SavingsGoal> goals,
     required DateTime now,
   }) {
-    // monthTotals[0] is last full month, [1] the one before, and so on.
+    // income[0]/spend[0] is the last full month, [1] the one before, and so on.
+    // Month edges are compared as epoch milliseconds, which is much cheaper
+    // than reading year/month from each transaction's local DateTime.
     final income = List.filled(4, 0);
     final spend = List.filled(4, 0);
-    final currentMonth = now.year * 12 + now.month;
+    final edges = [for (var i = 0; i <= 4; i++) DateTime(now.year, now.month - i).millisecondsSinceEpoch];
     for (final t in transactions) {
-      final index = currentMonth - (t.occurredAt.year * 12 + t.occurredAt.month) - 1;
-      if (index < 0 || index > 3) continue;
+      final at = t.occurredAt.millisecondsSinceEpoch;
+      if (at >= edges[0] || at < edges[4]) continue;
+      var index = 0;
+      while (at < edges[index + 1]) {
+        index++;
+      }
       if (t.isExpense) {
         spend[index] += t.amount.minor;
       } else {
